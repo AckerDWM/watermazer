@@ -1,0 +1,161 @@
+```{r, message=FALSE, warning=FALSE}
+library(magrittr)
+library(abind)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Parameters
+im_path = "pivideoh02.mp4"
+fps = 5
+duration = 30
+start_frame = 1
+
+# Tracking
+video = load_video(im_path, fps, duration, start_frame)
+
+mask = select_mask(video, frame=5, threshold=.3, dilation=100)
+inspect_mask(video, mask, frame=1)
+
+tracking = track(video, mask, smoothing=F)
+inspect_tracking(tracking)
+save_tracking(path="tracking_output.csv", tracking)
+
+# Representative video output
+create_tracking_video(
+  tracking, in_path=im_path, out_path="tracking_output.mp4", 
+  fps, duration, start_frame)
+```
+
+```{r}
+load_video = function(im_path, fps=5, duration=60, start_frame=1) {
+  # load the video
+  imager::load.video(
+    im_path, maxSize=4, skip.to=start_frame, 
+    fps=fps, frames=duration*fps) %>% 
+    imager::grayscale() %>%
+    imager::imsplit(axis="z")
+}
+
+select_mask = function(video, frame=1, threshold=.3, dilation=100) {
+  # create mask
+  frame = video[[frame]]
+  
+  labels = frame %>% 
+    {.[,]} %>%
+    {.>threshold} %>%
+    imager::as.cimg() %>%
+    imager::label()
+  
+  tab = table(c(labels))
+  arena_idx = names(tab)[which.max(tab)] %>% as.numeric()
+  
+  mat = frame[,]
+  mat[,] = 0
+  mat[labels[,] != arena_idx] = 1
+  
+  mask =
+    mat %>%
+    imager::as.cimg() %>%
+    imager::erode_square(50) %>%
+    imager::dilate_square(dilation) %>%
+    {.[,]}
+}
+
+inspect_mask = function(video, mask, frame) {
+  # display a masked video frame
+  video[[frame]] %>%
+    {.[,][mask==1] = 1;.} %>%
+    plot()
+}
+
+track = function(video, mask, smoothing=F) {
+  # Perform tracking
+  centroids = lapply(video, function(frame) {
+  
+  labelled_im = 
+    frame %>%
+    {.[,][mask==1] = 1;.} %>%
+    imager::as.cimg() %>%
+    imager::isoblur(1) %>% 
+    as.matrix() %>%
+    tanh() %>%
+    imager::threshold(.3) %>%
+    imager::as.cimg() %>%
+    imager::distance_transform(1) %>%
+    imager::threshold(.5) %>%
+    imager::erode_square(3) %>%
+    imager::label()
+    
+    labels = 
+      labelled_im[,] %>% 
+      c() %>% 
+      unique()
+    
+    if (length(labels) == 0) return(c(NA, NA)) # error behavior
+    
+    object_sizes = sapply(labels, function(label) {
+      (labelled_im[,] == label) %>% sum() %>% sum()
+    })
+      
+    coords = reshape2::melt(labelled_im[,] == which.max(object_sizes))
+  
+    x_centroid = coords %>% dplyr::filter(value) %$% mean(Var1)
+    y_centroid = coords %>% dplyr::filter(value) %$% mean(Var2)
+    
+    centroid = c(x_centroid, y_centroid)
+    
+    previous_centroid <<- centroid
+    
+    return(centroid)
+  }) %>%
+    do.call(rbind, .) %>%
+    data.frame() %>%
+    dplyr::rename(x=X1, y=X2)
+  
+  # Kalman interpolation of missing frames
+  centroids$x = imputeTS::na.kalman(centroids$x)
+  centroids$y = imputeTS::na.kalman(centroids$y)
+  
+  # add frame number annotation
+  centroids$frame = 1:nrow(centroids)
+  centroids$time_seconds = centroids$frame/fps
+  
+  return(centroids)
+}
+
+inspect_tracking = function(tracking, ...) {
+  # Display the tracked path
+  plot(tracking$x, tracking$y, type="l", 
+       asp=1, xlab="x [px]", ylab="y [px]",
+       ...)
+}
+
+save_tracking = function(path, tracking) {
+  # Save tracking data to a text file
+  write.csv(tracking, path, row.names=F)
+}
+
+create_tracking_video = function(
+  tracking, in_path, out_path, fps=5, duration=60, start_frame=1) {
+  # Make a video where the tracked position is marked by a red dot
+  video_color = 
+  imager::load.video(
+    in_path, maxSize=4, skip.to=start_frame, 
+    fps=fps, frames=duration*fps) %>%
+    imager::imsplit("z")
+  
+  for (t in fps:(nrow(tracking)-fps)) {
+    x = round(tracking$x[t])
+    y = round(tracking$y[t])
+    video_color[[t]][(x-5):(x+5), (y-5):(y+5), , 1] = 1
+    video_color[[t]][(x-5):(x+5), (y-5):(y+5), , 2] = 0
+    video_color[[t]][(x-5):(x+5), (y-5):(y+5), , 3] = 0
+  }
+  
+  video_color %<>% imager::imappend("z")
+  imager::save.video(video_color, fps=fps, fname=out_path)
+}
+```
+
