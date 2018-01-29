@@ -1,0 +1,97 @@
+---
+title: "watermazer"
+author: "Daniel Acker"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Introduction
+
+The Morris water maze tests spatial memory in animals. I created watermazer to help the Paradis Lab (Brandeis University) analyze video recordings of mice in the Morris water maze. This package performs video tracking of mice using raw video as input. Default values are optimized for the specific maze setup in the Paradis Lab.
+
+# Work flow
+
+First import watermazer.
+
+```{r, message=FALSE, warning=FALSE}
+library(watermazer)
+```
+
+Next, define key parameters including the image location, the desired frame rate, the video duration, and the start frame for tracking. Lower frame rates will be tracked faster, but higher frame rates will give smoother results. I find that five frames per second is reasonable.
+
+```{r}
+# Parameters
+im_path = "/Users/danielacker/Desktop/pivideoh03.mp4"
+fps = 5
+duration = 30
+start_frame = 1
+```
+
+Now load the video using the parameters defined above.
+
+```{r, fig.height=4, fig.width=4}
+# Tracking
+video = load_video(im_path, fps, duration, start_frame)
+plot(video[[1]]) # display the first frame
+```
+
+Onve the video is loaded, you can define a mask (a region in which the animal will be tracked). This is important because shadows around the maze can be mistaken for the mouse. The mask is generated automatically using the luminance of the water. Choosing different mask basis frames can produce different results. I like to choose a frame several seconds into the video to avoid interference from the experimenter's gloves.
+
+```{r, fig.height=4, fig.width=6}
+mask1 = select_mask(video, frame=1, threshold=.3, dilation=100)
+mask2 = select_mask(video, frame=5, threshold=.3, dilation=100)
+mask3 = select_mask(video, frame=10, threshold=.3, dilation=100)
+
+par(mfrow=c(1,3))
+inspect_mask(video, mask1, frame=1)
+inspect_mask(video, mask2, frame=5)
+inspect_mask(video, mask3, frame=10)
+```
+
+Now you can perform the actual tracking. This is done with the "track" function that takes the video and mask as arguements. You can choose to smooth the tracking using a rolling median filter by setting "smoothing=TRUE". This is typically not necessary but can reduce jitter.
+
+```{r, fig.height=4, fig.width=4}
+tracking = track(video, mask3, smoothing=F)
+inspect_tracking(tracking)
+```
+
+The tracking data can be easily saved to a text file with "save tracking".
+
+```{r, echo=TRUE}
+save_tracking(path="tracking_output.csv", tracking)
+```
+
+Finally, we can create a representative video from the tracking data by overlaying a red dot at the mouse's position. This lets us evaluate the quality of the tracked output in "real time".
+
+```{r, echo=TRUE}
+create_tracking_video(
+  tracking, in_path=im_path, out_path="tracking_output.mp4", 
+  fps, duration, start_frame)
+```
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(magrittr)
+library(reshape2)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+video[[150]][,] %>%
+  melt() %>%
+  ggplot(aes(Var1, Var2, fill=value)) +
+  theme_void() +
+  coord_equal() +
+  geom_raster() +
+  scale_fill_distiller() +
+  geom_point(
+    data=filter(tracking, frame%in%c(145:150)), 
+    inherit.aes=F, 
+    aes(x=x, y=y),
+    color="red",
+    alpha=seq(0, 1, length=6)) +
+  theme(legend.position = "none")
+```
+
+
